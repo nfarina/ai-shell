@@ -14,6 +14,8 @@ function ai() {
   if [[ -z "$*" ]]; then
     echo "Usage: ai <natural language description>" >&2
     echo "  ai! to follow up on the last thread" >&2
+    echo "  OR:  alt-a to start a new thread" >&2
+    echo "  AND: alt-shift-a to follow up on the last thread" >&2
     return 1
   fi
 
