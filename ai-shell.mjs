@@ -1,19 +1,29 @@
 #!/usr/bin/env node
 
-import { createInterface } from 'node:readline';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
+// --- Paths ---
+
+const DATA_DIR = join(homedir(), '.local', 'share', 'ai-shell');
+const HISTORY_FILE = join(DATA_DIR, 'history.jsonl');
+const CONFIG_PATH = join(homedir(), '.config', 'ai-shell', 'config.json');
+
+function ensureDataDir() {
+  if (!existsSync(DATA_DIR)) {
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
+}
+
 // --- Config ---
 
 function loadConfig() {
-  const configPath = join(homedir(), '.config', 'ai-shell', 'config.json');
   let fileConfig = {};
-  if (existsSync(configPath)) {
+  if (existsSync(CONFIG_PATH)) {
     try {
-      fileConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+      fileConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
     } catch {}
   }
   return {
@@ -22,6 +32,39 @@ function loadConfig() {
     apiKey: fileConfig.apiKey || process.env.ANTHROPIC_API_KEY,
     systemPrompt: fileConfig.systemPrompt || null,
   };
+}
+
+// --- History ---
+
+function readHistory() {
+  if (!existsSync(HISTORY_FILE)) return [];
+  try {
+    return readFileSync(HISTORY_FILE, 'utf-8')
+      .split('\n')
+      .filter(Boolean)
+      .map(line => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+function appendHistory(entry) {
+  ensureDataDir();
+  appendFileSync(HISTORY_FILE, JSON.stringify(entry) + '\n');
+}
+
+function getLastThread() {
+  const history = readHistory();
+  if (history.length === 0) return [];
+
+  // Walk backwards from the end, collecting entries until we hit a "new" thread start
+  const thread = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    thread.unshift(history[i]);
+    if (history[i].newThread) break;
+  }
+  // Cap at 10 turns
+  return thread.slice(-10);
 }
 
 // --- System context ---
@@ -58,9 +101,33 @@ Rules:
 - For multi-line commands (loops, etc.), join them on one line where possible`;
 }
 
+// --- Build messages from thread context ---
+
+function buildMessages(query, thread, lastExitCode) {
+  const messages = [];
+
+  for (const entry of thread) {
+    messages.push({ role: 'user', content: entry.query });
+    if (entry.command) {
+      let assistantMsg = `COMMAND: ${entry.command}`;
+      if (entry.explanation) assistantMsg += `\nEXPLANATION: ${entry.explanation}`;
+      messages.push({ role: 'assistant', content: assistantMsg });
+    }
+  }
+
+  // Build the follow-up message with exit code context
+  let userMsg = query;
+  if (lastExitCode !== null && lastExitCode !== undefined && lastExitCode !== '0' && lastExitCode !== 0) {
+    userMsg = `The previous command exited with code ${lastExitCode}.\n\n${query}`;
+  }
+  messages.push({ role: 'user', content: userMsg });
+
+  return messages;
+}
+
 // --- Anthropic API (streaming) ---
 
-async function callAnthropic(query, config) {
+async function callAnthropic(messages, config) {
   const systemPrompt = buildSystemPrompt(config);
 
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
@@ -75,7 +142,7 @@ async function callAnthropic(query, config) {
       max_tokens: 1024,
       system: systemPrompt,
       stream: true,
-      messages: [{ role: 'user', content: query }],
+      messages,
     }),
   });
 
@@ -148,19 +215,25 @@ async function main() {
   const args = process.argv.slice(2);
 
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-    process.stderr.write(`Usage: ai-shell <natural language query>
+    process.stderr.write(`Usage: ai-shell [--followup] [--exit-code=N] <query>
+
+Options:
+  --followup       Continue the last conversation thread
+  --exit-code=N    Exit code of the last command (auto-provided by shell wrapper)
+  --help, -h       Show this help
 
 Examples:
   ai-shell "list files sorted by size"
-  ai-shell "find all TODO comments in js files"
-  ai-shell "convert input.mp3 to m4a using ffmpeg"
+  ai-shell --followup "that didn't work, try a different approach"
+  ai-shell --followup --exit-code=1 "fix that"
 
 Environment:
   ANTHROPIC_API_KEY   Your Anthropic API key (required)
-  AI_SHELL_MODEL      Model to use (default: claude-sonnet-4-20250514)
+  AI_SHELL_MODEL      Model to use (default: claude-sonnet-4-6)
   AI_SHELL_PROVIDER   API provider (default: anthropic)
 
 Config file: ~/.config/ai-shell/config.json
+History:    ~/.local/share/ai-shell/history.jsonl
 `);
     process.exit(args.length === 0 ? 1 : 0);
   }
@@ -173,12 +246,41 @@ Config file: ~/.config/ai-shell/config.json
     process.exit(1);
   }
 
-  const query = args.join(' ');
+  // Parse flags
+  let followup = false;
+  let lastExitCode = null;
+  const queryParts = [];
+
+  for (const arg of args) {
+    if (arg === '--followup') {
+      followup = true;
+    } else if (arg.startsWith('--exit-code=')) {
+      lastExitCode = arg.split('=')[1];
+    } else {
+      queryParts.push(arg);
+    }
+  }
+
+  const query = queryParts.join(' ');
+  if (!query) {
+    process.stderr.write('Error: No query provided.\n');
+    process.exit(1);
+  }
+
+  // Build message history
+  let messages;
+  if (followup) {
+    const thread = getLastThread();
+    messages = buildMessages(query, thread, lastExitCode);
+  } else {
+    messages = [{ role: 'user', content: query }];
+  }
+
   process.stderr.write('\x1b[2m'); // dim
 
   let fullText;
   try {
-    fullText = await callAnthropic(query, config);
+    fullText = await callAnthropic(messages, config);
   } catch (err) {
     process.stderr.write(`\x1b[0m\x1b[31mError: ${err.message}\x1b[0m\n`);
     process.exit(1);
@@ -190,13 +292,29 @@ Config file: ~/.config/ai-shell/config.json
 
   if (result.type === 'clarify') {
     process.stderr.write(`\x1b[33m? ${result.message}\x1b[0m\n`);
+    // Save clarify to history so follow-up has context
+    appendHistory({
+      timestamp: Date.now(),
+      newThread: !followup,
+      query,
+      command: null,
+      explanation: null,
+      clarify: result.message,
+    });
     process.exit(2);
   }
 
-  if (result.explanation) {
-    process.stderr.write(`\x1b[36m${result.explanation}\x1b[0m\n`);
-  }
+  // Only show the clean summary (the streaming already showed the raw text)
   process.stderr.write(`\x1b[32m→ ${result.command}\x1b[0m\n`);
+
+  // Save to history
+  appendHistory({
+    timestamp: Date.now(),
+    newThread: !followup,
+    query,
+    command: result.command,
+    explanation: result.explanation,
+  });
 
   // stdout: only the command (captured by shell wrapper)
   process.stdout.write(result.command);

@@ -4,13 +4,16 @@
 
 AI_SHELL_BIN="${0:A:h}/ai-shell.mjs"
 
-# Primary interface: ai "your question"
-# The resulting command is placed on your editing buffer via print -z,
-# so you can edit it and it enters your shell history when you press Enter.
+# Track the exit code of the last command (for ai! context)
+__ai_shell_last_exit=0
+function __ai_shell_save_exit() { __ai_shell_last_exit=$? }
+precmd_functions+=(__ai_shell_save_exit)
+
+# ai "question" — start a new thread
 function ai() {
   if [[ -z "$*" ]]; then
     echo "Usage: ai <natural language description>" >&2
-    echo "Example: ai list files sorted by size" >&2
+    echo "  ai! to follow up on the last thread" >&2
     return 1
   fi
 
@@ -27,14 +30,68 @@ function ai() {
   fi
 }
 
-# ZLE widget: press Alt+A to open an inline AI prompt.
-# The resulting command is placed directly in your BUFFER.
-function _ai_shell_widget() {
-  local query
+# ai! "followup" — continue the last thread, with exit code context
+function ai!() {
+  if [[ -z "$*" ]]; then
+    echo "Usage: ai! <followup question>" >&2
+    echo "Example: ai! that gave an error, try another approach" >&2
+    return 1
+  fi
 
-  zle -I  # invalidate display
-  echo -n "ai> " > /dev/tty
-  read -r query < /dev/tty
+  local cmd
+  cmd=$("$AI_SHELL_BIN" --followup --exit-code=$__ai_shell_last_exit "$*")
+  local rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    return $rc
+  fi
+
+  if [[ -n "$cmd" ]]; then
+    print -z "$cmd"
+  fi
+}
+
+# --- ZLE Widgets ---
+
+# Read multi-line input from /dev/tty.
+# Disables bracketed paste so pasted text arrives clean.
+# Input ends on: empty line (double-enter), Ctrl+D, or single line with no paste.
+function __ai_shell_read_query() {
+  local prompt_str="$1"
+  local lines=()
+  local line
+
+  # Disable bracketed paste mode during input
+  printf '\e[?2004l' > /dev/tty
+
+  # Read the first line
+  echo -n "$prompt_str" > /dev/tty
+  IFS= read -r line < /dev/tty || { printf '\e[?2004h' > /dev/tty; REPLY=""; return; }
+  line="${line//\$'\e[200~'/}"
+  line="${line//\$'\e[201~'/}"
+  [[ -n "$line" ]] && lines+=("$line")
+
+  # Try reading more lines with a short timeout.
+  # If nothing arrives within 0.1s, this was typed (not pasted) — submit immediately.
+  # If paste data arrives, keep reading until empty line or timeout.
+  while IFS= read -r -t 0.1 line < /dev/tty; do
+    line="${line//\$'\e[200~'/}"
+    line="${line//\$'\e[201~'/}"
+    [[ -z "$line" ]] && break
+    lines+=("$line")
+  done
+
+  # Re-enable bracketed paste mode
+  printf '\e[?2004h' > /dev/tty
+
+  REPLY="${(j:\n:)lines}"
+}
+
+# Alt+A: new thread
+function _ai_shell_widget() {
+  zle -I
+  __ai_shell_read_query "ai> "
+  local query="$REPLY"
 
   if [[ -z "$query" ]]; then
     zle redisplay
@@ -59,5 +116,36 @@ function _ai_shell_widget() {
   zle redisplay
 }
 
+# Alt+Shift+A: follow up on last thread
+function _ai_shell_followup_widget() {
+  zle -I
+  __ai_shell_read_query "ai!> "
+  local query="$REPLY"
+
+  if [[ -z "$query" ]]; then
+    zle redisplay
+    return
+  fi
+
+  local saved="$BUFFER"
+  BUFFER="# thinking..."
+  zle redisplay
+
+  local cmd
+  cmd=$("$AI_SHELL_BIN" --followup --exit-code=$__ai_shell_last_exit "$query" 2>/dev/tty)
+
+  if [[ -n "$cmd" ]]; then
+    BUFFER="$cmd"
+    CURSOR=${#BUFFER}
+  else
+    BUFFER="$saved"
+    CURSOR=${#BUFFER}
+  fi
+
+  zle redisplay
+}
+
 zle -N _ai_shell_widget
-bindkey '^[a' _ai_shell_widget  # Alt+A
+zle -N _ai_shell_followup_widget
+bindkey '^[a' _ai_shell_widget           # Alt+A
+bindkey '^[A' _ai_shell_followup_widget   # Alt+Shift+A
