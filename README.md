@@ -39,30 +39,30 @@ $ ai list the 5 largest files in this directory
 Requires Node.js 18+ (for native `fetch`) and zsh.
 
 ```sh
-git clone https://github.com/YOUR_USERNAME/ai-shell.git ~/.ai-shell
-echo 'source ~/.ai-shell/ai-shell.plugin.zsh' >> ~/.zshrc
+curl -fsSL https://raw.githubusercontent.com/nfarina/ai-shell/main/install.sh | bash
 ```
 
-Then set an API key for whichever provider you want to use:
+Open a new shell, then run:
 
 ```sh
-export ANTHROPIC_API_KEY=sk-ant-...   # https://console.anthropic.com/
-# or
-export OPENAI_API_KEY=sk-...          # https://platform.openai.com/api-keys
-# or
-export GEMINI_API_KEY=...             # https://aistudio.google.com/apikey
+ai --setup
 ```
 
-Open a new shell and you're ready.
+That creates `~/.config/ai-shell/config.json` for you.
 
 ## Usage
 
-| Command          | What it does                                          |
-| ---------------- | ----------------------------------------------------- |
-| `ai <query>`     | Start a new thread. Result lands on your prompt.      |
-| `ai! <query>`    | Follow up on the last thread (carries exit code too). |
-| `Alt+A`          | Prompt for a query inline, then replace the buffer.   |
-| `Alt+Shift+A`    | Same, but as a follow-up on the last thread.          |
+| Command             | What it does                                          |
+| ------------------- | ----------------------------------------------------- |
+| `ai <query>`        | Start a new thread. Result lands on your prompt.      |
+| `ai! <query>`       | Follow up on the last thread (carries exit code too). |
+| `ai --setup`        | Create or rewrite your config file.                   |
+| `ai --update`       | Install the latest version from GitHub.               |
+| `Option+A`          | Prompt for a query inline, then replace the buffer.   |
+| `Option+Shift+A`    | Same, but as a follow-up on the last thread.          |
+
+If you try `ai ...` before configuring it, ai-shell will launch the same setup
+flow automatically.
 
 ### Examples
 
@@ -83,20 +83,24 @@ of guessing.
 
 ## Providers
 
-The provider is auto-detected from whichever API key env var is set. To pick
-one explicitly (if you have multiple keys exported) set `AI_SHELL_PROVIDER`.
+The normal setup flow writes a config file. If you also set environment vars,
+they override the config and are useful for temporary changes or CI.
 
-| Provider    | Env var              | Default model        |
-| ----------- | -------------------- | -------------------- |
-| `anthropic` | `ANTHROPIC_API_KEY`  | `claude-sonnet-4-6`  |
-| `openai`    | `OPENAI_API_KEY`     | `gpt-5.4-mini`          |
-| `gemini`    | `GEMINI_API_KEY`     | `gemini-3-flash-preview` |
+| Provider    | Env override         | Default model              |
+| ----------- | -------------------- | -------------------------- |
+| `anthropic` | `ANTHROPIC_API_KEY`  | `claude-sonnet-4-6`        |
+| `openai`    | `OPENAI_API_KEY`     | `gpt-5.4-mini`             |
+| `gemini`    | `GEMINI_API_KEY`     | `gemini-3-flash-preview`   |
 
-Override the model with `AI_SHELL_MODEL=...` or in the config file.
+You can also override:
+
+- `AI_SHELL_PROVIDER`
+- `AI_SHELL_MODEL`
+- `AI_SHELL_SYSTEM_PROMPT`
 
 ## Config file
 
-Optional. Lives at `~/.config/ai-shell/config.json`:
+Lives at `~/.config/ai-shell/config.json`:
 
 ```json
 {
@@ -107,20 +111,39 @@ Optional. Lives at `~/.config/ai-shell/config.json`:
 }
 ```
 
-All fields are optional. Env vars override nothing here — config values win if
-set. Set `systemPrompt` to a string to replace the built-in prompt entirely.
+`provider`, `model`, and `apiKey` are what most users need. `systemPrompt` is
+optional and replaces the built-in prompt entirely.
+
+The API key is stored in plain text in this file. That keeps setup simple, but
+it is a deliberate tradeoff.
+
+## Updating
+
+ai-shell checks GitHub for a newer version occasionally while you use it. If a
+new version is available, it prints a reminder:
+
+```sh
+Update available: 0.1.0 -> 0.2.0. Run "ai --update".
+```
+
+Then update in place:
+
+```sh
+ai --update
+```
 
 ## Where things live
 
 - Config:   `~/.config/ai-shell/config.json`
 - History:  `~/.local/share/ai-shell/history.jsonl` (one JSON object per turn)
+- Update cache: `~/.local/share/ai-shell/update-check.json`
 
 History is append-only and used for follow-up context. Delete the file to wipe
 it; nothing breaks.
 
 ## How it works
 
-`ai-shell.plugin.zsh` defines the `ai` / `ai!` functions and the Alt+A key
+`ai-shell.plugin.zsh` defines the `ai` / `ai!` functions and the Option+A key
 widgets. They shell out to `ai-shell.mjs`, which makes a streaming API call to
 your chosen provider using a system prompt that asks for a single command in a
 strict `COMMAND: ... / EXPLANATION: ...` format. The plugin captures the

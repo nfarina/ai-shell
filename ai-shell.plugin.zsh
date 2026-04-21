@@ -2,7 +2,8 @@
 # Source this file in your ~/.zshrc:
 #   source /path/to/ai-shell/ai-shell.plugin.zsh
 
-AI_SHELL_BIN="${0:A:h}/ai-shell.mjs"
+AI_SHELL_HOME="${${(%):-%N}:A:h}"
+AI_SHELL_BIN="$AI_SHELL_HOME/ai-shell.mjs"
 
 # Track the exit code of the last command (for ai! context)
 __ai_shell_last_exit=0
@@ -11,8 +12,10 @@ precmd_functions+=(__ai_shell_save_exit)
 
 # ai "question" — start a new thread
 function ai() {
-  if [[ -z "$*" ]]; then
+  if [[ $# -eq 0 ]]; then
     echo "Usage: ai <natural language description>" >&2
+    echo "  ai --setup to configure your provider and API key" >&2
+    echo "  ai --update to install the latest version" >&2
     echo "  ai! to follow up on the last thread" >&2
     echo "  OR:  alt-a to start a new thread" >&2
     echo "  AND: alt-shift-a to follow up on the last thread" >&2
@@ -20,7 +23,7 @@ function ai() {
   fi
 
   local cmd
-  cmd=$("$AI_SHELL_BIN" "$*")
+  cmd=$("$AI_SHELL_BIN" "$@")
   local rc=$?
 
   if [[ $rc -ne 0 ]]; then
@@ -89,7 +92,7 @@ function __ai_shell_read_query() {
   REPLY="${(j:\n:)lines}"
 }
 
-# Alt+A: new thread
+# Option+A: new thread
 function _ai_shell_widget() {
   zle -I
   __ai_shell_read_query "ai> "
@@ -118,7 +121,7 @@ function _ai_shell_widget() {
   zle redisplay
 }
 
-# Alt+Shift+A: follow up on last thread
+# Option+Shift+A: follow up on last thread
 function _ai_shell_followup_widget() {
   zle -I
   __ai_shell_read_query "ai!> "
@@ -149,5 +152,5 @@ function _ai_shell_followup_widget() {
 
 zle -N _ai_shell_widget
 zle -N _ai_shell_followup_widget
-bindkey '^[a' _ai_shell_widget           # Alt+A
-bindkey '^[A' _ai_shell_followup_widget   # Alt+Shift+A
+bindkey '^[a' _ai_shell_widget           # Option+A
+bindkey '^[A' _ai_shell_followup_widget   # Option+Shift+A

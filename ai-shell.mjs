@@ -1,93 +1,198 @@
 #!/usr/bin/env node
 
-import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
+import { spawnSync, execSync } from 'node:child_process';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
+import { dirname, join } from 'node:path';
 
-// --- Paths ---
+const APP_NAME = 'ai-shell';
+const REPO_OWNER = 'nfarina';
+const DEFAULT_BRANCH = 'main';
+const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${DEFAULT_BRANCH}/install.sh`;
+const VERSION_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${DEFAULT_BRANCH}/VERSION`;
+const VERSION = readTextFile(new URL('./VERSION', import.meta.url)).trim() || '0.0.0';
 
-const DATA_DIR = join(homedir(), '.local', 'share', 'ai-shell');
+const HOME_DIR = homedir();
+const CONFIG_DIR = join(HOME_DIR, '.config', APP_NAME);
+const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
+const DATA_DIR = join(HOME_DIR, '.local', 'share', APP_NAME);
 const HISTORY_FILE = join(DATA_DIR, 'history.jsonl');
-const CONFIG_PATH = join(homedir(), '.config', 'ai-shell', 'config.json');
-
-function ensureDataDir() {
-  if (!existsSync(DATA_DIR)) {
-    mkdirSync(DATA_DIR, { recursive: true });
-  }
-}
-
-// --- Providers ---
+const UPDATE_CACHE_FILE = join(DATA_DIR, 'update-check.json');
 
 const PROVIDERS = {
   anthropic: {
     defaultModel: 'claude-sonnet-4-6',
     envKey: 'ANTHROPIC_API_KEY',
+    apiKeyUrl: 'https://console.anthropic.com/',
     call: callAnthropic,
   },
   openai: {
     defaultModel: 'gpt-5.4-mini',
     envKey: 'OPENAI_API_KEY',
+    apiKeyUrl: 'https://platform.openai.com/api-keys',
     call: callOpenAI,
   },
   gemini: {
     defaultModel: 'gemini-3-flash-preview',
     envKey: 'GEMINI_API_KEY',
+    apiKeyUrl: 'https://aistudio.google.com/apikey',
     call: callGemini,
   },
 };
 
-// --- Config ---
+function ensureDir(dirPath) {
+  if (!existsSync(dirPath)) {
+    mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function readTextFile(pathLike) {
+  try {
+    return readFileSync(pathLike, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+function loadJson(pathLike, fallback = {}, warnLabel = null) {
+  if (!existsSync(pathLike)) return fallback;
+
+  try {
+    return JSON.parse(readFileSync(pathLike, 'utf-8'));
+  } catch (err) {
+    if (warnLabel) {
+      process.stderr.write(`\x1b[33mWarning: failed to parse ${warnLabel}: ${err.message}\x1b[0m\n`);
+    }
+    return fallback;
+  }
+}
+
+function writeJson(pathLike, value, { mode } = {}) {
+  ensureDir(dirname(pathLike));
+  writeFileSync(pathLike, `${JSON.stringify(value, null, 2)}\n`, mode ? { mode } : undefined);
+}
+
+function isInteractive() {
+  return Boolean(process.stdin.isTTY && process.stderr.isTTY);
+}
+
+function detectProviderFromEnv() {
+  for (const [name, spec] of Object.entries(PROVIDERS)) {
+    if (process.env[spec.envKey]) {
+      return name;
+    }
+  }
+  return null;
+}
 
 function loadConfig() {
-  let fileConfig = {};
-  if (existsSync(CONFIG_PATH)) {
-    try {
-      fileConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
-    } catch (err) {
-      process.stderr.write(`\x1b[33mWarning: failed to parse ${CONFIG_PATH}: ${err.message}\x1b[0m\n`);
-    }
-  }
-
-  // Determine provider: explicit setting wins, else auto-detect from env vars
-  let provider = fileConfig.provider || process.env.AI_SHELL_PROVIDER;
-  if (!provider) {
-    for (const [name, spec] of Object.entries(PROVIDERS)) {
-      if (process.env[spec.envKey]) { provider = name; break; }
-    }
-    provider = provider || 'anthropic';
-  }
-
+  const fileConfig = loadJson(CONFIG_PATH, {}, CONFIG_PATH);
+  const provider = process.env.AI_SHELL_PROVIDER || fileConfig.provider || detectProviderFromEnv() || 'anthropic';
   const spec = PROVIDERS[provider];
+
   if (!spec) {
     process.stderr.write(`\x1b[31mError: unknown provider "${provider}". Supported: ${Object.keys(PROVIDERS).join(', ')}\x1b[0m\n`);
     process.exit(1);
   }
 
   return {
+    fileConfig,
     provider,
     spec,
-    model: fileConfig.model || process.env.AI_SHELL_MODEL || spec.defaultModel,
-    apiKey: fileConfig.apiKey || process.env[spec.envKey],
-    systemPrompt: fileConfig.systemPrompt || null,
+    model: process.env.AI_SHELL_MODEL || fileConfig.model || spec.defaultModel,
+    apiKey: process.env[spec.envKey] || fileConfig.apiKey || null,
+    systemPrompt: process.env.AI_SHELL_SYSTEM_PROMPT || fileConfig.systemPrompt || null,
   };
 }
 
-function printSetupHelp(provider) {
-  process.stderr.write(`\x1b[31mNo API key found for provider "${provider}".\x1b[0m\n\n`);
-  process.stderr.write('Set one of these environment variables to get started:\n\n');
-  process.stderr.write('  Anthropic:  export ANTHROPIC_API_KEY=sk-ant-...     (https://console.anthropic.com/)\n');
-  process.stderr.write('  OpenAI:     export OPENAI_API_KEY=sk-...            (https://platform.openai.com/api-keys)\n');
-  process.stderr.write('  Gemini:     export GEMINI_API_KEY=...               (https://aistudio.google.com/apikey)\n\n');
-  process.stderr.write(`Or create ${CONFIG_PATH}:\n\n`);
-  process.stderr.write('  {\n');
-  process.stderr.write('    "provider": "anthropic",\n');
-  process.stderr.write('    "apiKey": "sk-ant-...",\n');
-  process.stderr.write('    "model": "claude-sonnet-4-6"\n');
-  process.stderr.write('  }\n');
+function printSetupHint(provider) {
+  const spec = PROVIDERS[provider];
+  process.stderr.write(`\x1b[31mNo API key configured for provider "${provider}".\x1b[0m\n`);
+  process.stderr.write(`Run \x1b[1mai --setup\x1b[0m to create ${CONFIG_PATH}.\n`);
+  process.stderr.write(`Optional env override: ${spec.envKey} (${spec.apiKeyUrl})\n`);
 }
 
-// --- History ---
+async function runSetup(existingConfig = {}) {
+  if (!isInteractive()) {
+    process.stderr.write(`Error: setup requires an interactive terminal. Create ${CONFIG_PATH} manually.\n`);
+    process.exit(1);
+  }
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+  });
+
+  try {
+    process.stderr.write(`\n${APP_NAME} setup\n`);
+    process.stderr.write(`This writes your config to ${CONFIG_PATH}.\n`);
+    process.stderr.write('API keys are stored in plain text in that file.\n\n');
+
+    const provider = await promptForProvider(rl, existingConfig.provider || detectProviderFromEnv() || 'anthropic');
+    const spec = PROVIDERS[provider];
+    const defaultModel = existingConfig.model || spec.defaultModel;
+    const existingApiKey = existingConfig.provider === provider ? (existingConfig.apiKey || '') : '';
+    const envApiKey = process.env[spec.envKey] || '';
+    const currentApiKey = existingApiKey || envApiKey;
+
+    process.stderr.write(`Get a ${provider} API key here: ${spec.apiKeyUrl}\n`);
+
+    let apiKey = '';
+    while (!apiKey) {
+      const promptSuffix = currentApiKey ? ' [press enter to keep current value]' : '';
+      const response = await rl.question(`API key${promptSuffix}: `);
+      apiKey = response.trim() || currentApiKey;
+      if (!apiKey) {
+        process.stderr.write('An API key is required.\n');
+      }
+    }
+
+    const modelResponse = await rl.question(`Model [${defaultModel}]: `);
+    const model = modelResponse.trim() || defaultModel;
+
+    const config = {
+      provider,
+      model,
+      apiKey,
+      systemPrompt: existingConfig.systemPrompt || null,
+    };
+
+    writeJson(CONFIG_PATH, config, { mode: 0o600 });
+    process.stderr.write(`\nSaved ${CONFIG_PATH}\n\n`);
+    return config;
+  } finally {
+    rl.close();
+  }
+}
+
+async function promptForProvider(rl, defaultProvider) {
+  const providerNames = Object.keys(PROVIDERS);
+  const options = providerNames
+    .map((name, index) => `${index + 1}. ${name}${name === defaultProvider ? ' (default)' : ''}`)
+    .join('\n');
+
+  while (true) {
+    process.stderr.write(`Choose a provider:\n${options}\n`);
+    const answer = (await rl.question(`Provider [${defaultProvider}]: `)).trim().toLowerCase();
+
+    if (!answer) return defaultProvider;
+    if (PROVIDERS[answer]) return answer;
+
+    const numericChoice = Number.parseInt(answer, 10);
+    if (Number.isInteger(numericChoice) && numericChoice >= 1 && numericChoice <= providerNames.length) {
+      return providerNames[numericChoice - 1];
+    }
+
+    process.stderr.write(`Unknown provider "${answer}".\n`);
+  }
+}
 
 function readHistory() {
   if (!existsSync(HISTORY_FILE)) return [];
@@ -102,32 +207,34 @@ function readHistory() {
 }
 
 function appendHistory(entry) {
-  ensureDataDir();
-  appendFileSync(HISTORY_FILE, JSON.stringify(entry) + '\n');
+  ensureDir(DATA_DIR);
+  appendFileSync(HISTORY_FILE, `${JSON.stringify(entry)}\n`);
 }
 
 function getLastThread() {
   const history = readHistory();
   if (history.length === 0) return [];
 
-  // Walk backwards from the end, collecting entries until we hit a "new" thread start
   const thread = [];
-  for (let i = history.length - 1; i >= 0; i--) {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
     thread.unshift(history[i]);
     if (history[i].newThread) break;
   }
-  // Cap at 10 turns
+
   return thread.slice(-10);
 }
 
-// --- System context ---
-
 function getSystemContext() {
   let os = 'unknown';
-  try { os = execSync('uname -s', { encoding: 'utf-8' }).trim(); } catch {}
-  const cwd = process.cwd();
-  const shell = process.env.SHELL || 'zsh';
-  return { os, cwd, shell };
+  try {
+    os = execSync('uname -s', { encoding: 'utf-8' }).trim();
+  } catch {}
+
+  return {
+    os,
+    cwd: process.cwd(),
+    shell: process.env.SHELL || 'zsh',
+  };
 }
 
 function buildSystemPrompt(config) {
@@ -154,8 +261,6 @@ Rules:
 - For multi-line commands (loops, etc.), join them on one line where possible`;
 }
 
-// --- Build messages from thread context ---
-
 function buildMessages(query, thread, lastExitCode) {
   const messages = [];
 
@@ -168,7 +273,6 @@ function buildMessages(query, thread, lastExitCode) {
     }
   }
 
-  // Build the follow-up message with exit code context
   let userMsg = query;
   if (lastExitCode !== null && lastExitCode !== undefined && lastExitCode !== '0' && lastExitCode !== 0) {
     userMsg = `The previous command exited with code ${lastExitCode}.\n\n${query}`;
@@ -177,10 +281,6 @@ function buildMessages(query, thread, lastExitCode) {
 
   return messages;
 }
-
-// --- SSE streaming ---
-// Reads an SSE response, calls extractDelta(event) on each parsed JSON event,
-// writes any returned text chunk to stderr, and returns the concatenated text.
 
 async function streamSSE(resp, extractDelta) {
   if (!resp.ok) {
@@ -199,7 +299,7 @@ async function streamSSE(resp, extractDelta) {
     buf += decoder.decode(value, { stream: true });
 
     const lines = buf.split('\n');
-    buf = lines.pop(); // keep incomplete line in buffer
+    buf = lines.pop();
 
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
@@ -221,8 +321,6 @@ async function streamSSE(resp, extractDelta) {
   return fullText;
 }
 
-// --- Anthropic ---
-
 async function callAnthropic(messages, config) {
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -240,19 +338,17 @@ async function callAnthropic(messages, config) {
     }),
   });
 
-  return streamSSE(resp, event =>
+  return streamSSE(resp, event => (
     event.type === 'content_block_delta' ? event.delta?.text : null
-  );
+  ));
 }
-
-// --- OpenAI ---
 
 async function callOpenAI(messages, config) {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${config.apiKey}`,
+      Authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify({
       model: config.model,
@@ -265,19 +361,14 @@ async function callOpenAI(messages, config) {
     }),
   });
 
-  return streamSSE(resp, event =>
-    event.choices?.[0]?.delta?.content
-  );
+  return streamSSE(resp, event => event.choices?.[0]?.delta?.content);
 }
-
-// --- Gemini ---
 
 async function callGemini(messages, config) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(config.apiKey)}`;
-
-  const contents = messages.map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: m.content }],
+  const contents = messages.map(message => ({
+    role: message.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: message.content }],
   }));
 
   const resp = await fetch(url, {
@@ -290,12 +381,8 @@ async function callGemini(messages, config) {
     }),
   });
 
-  return streamSSE(resp, event =>
-    event.candidates?.[0]?.content?.parts?.[0]?.text
-  );
+  return streamSSE(resp, event => event.candidates?.[0]?.content?.parts?.[0]?.text);
 }
-
-// --- Response parsing ---
 
 function parseResponse(text) {
   const commandMatch = text.match(/COMMAND:\s*(.+?)(?:\n|$)/s);
@@ -314,64 +401,169 @@ function parseResponse(text) {
     };
   }
 
-  // Fallback: treat entire response as command (strip markdown fences)
   const stripped = text.replace(/```[\w]*\n?/g, '').trim();
   return { type: 'command', command: stripped, explanation: null };
 }
 
-// --- Main ---
+function compareVersions(left, right) {
+  const parse = version => version
+    .replace(/^v/, '')
+    .split('.')
+    .map(part => Number.parseInt(part, 10) || 0);
 
-async function main() {
-  const args = process.argv.slice(2);
+  const a = parse(left);
+  const b = parse(right);
+  const length = Math.max(a.length, b.length);
 
-  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-    process.stderr.write(`Usage: ai-shell [--followup] [--exit-code=N] <query>
+  for (let i = 0; i < length; i += 1) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) return diff;
+  }
+
+  return 0;
+}
+
+async function fetchLatestVersion() {
+  const resp = await fetch(VERSION_URL, {
+    headers: { 'User-Agent': APP_NAME },
+    signal: AbortSignal.timeout(1500),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Unable to fetch latest version (${resp.status})`);
+  }
+
+  return (await resp.text()).trim();
+}
+
+function loadUpdateCache() {
+  return loadJson(UPDATE_CACHE_FILE, {});
+}
+
+function saveUpdateCache(cache) {
+  writeJson(UPDATE_CACHE_FILE, cache);
+}
+
+async function checkForUpdates({ force = false } = {}) {
+  const now = Date.now();
+  const cache = loadUpdateCache();
+  const stale = !cache.checkedAt || (now - cache.checkedAt) > 24 * 60 * 60 * 1000;
+
+  if (!force && !stale && cache.latestVersion) {
+    return {
+      currentVersion: VERSION,
+      latestVersion: cache.latestVersion,
+      isUpdateAvailable: compareVersions(cache.latestVersion, VERSION) > 0,
+    };
+  }
+
+  try {
+    const latestVersion = await fetchLatestVersion();
+    saveUpdateCache({ checkedAt: now, latestVersion });
+    return {
+      currentVersion: VERSION,
+      latestVersion,
+      isUpdateAvailable: compareVersions(latestVersion, VERSION) > 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function maybeNotifyUpdate() {
+  if (!isInteractive()) return;
+
+  const updateInfo = await checkForUpdates();
+  if (!updateInfo || !updateInfo.isUpdateAvailable) return;
+
+  process.stderr.write(`\x1b[33mUpdate available: ${updateInfo.currentVersion} -> ${updateInfo.latestVersion}. Run "ai --update".\x1b[0m\n`);
+}
+
+function runUpdate() {
+  process.stderr.write(`Updating ${APP_NAME} via ${INSTALL_SCRIPT_URL}\n`);
+  const result = spawnSync('bash', ['-lc', `curl -fsSL '${INSTALL_SCRIPT_URL}' | bash`], {
+    stdio: 'inherit',
+  });
+
+  if (result.error) {
+    process.stderr.write(`Error: ${result.error.message}\n`);
+    process.exit(1);
+  }
+
+  process.exit(result.status ?? 0);
+}
+
+function printHelp() {
+  process.stderr.write(`Usage: ai-shell [options] <query>
 
 Options:
+  --setup          Create or rewrite ${CONFIG_PATH}
+  --update         Download and install the latest version from GitHub
+  --version        Print the installed version
   --followup       Continue the last conversation thread
   --exit-code=N    Exit code of the last command (auto-provided by shell wrapper)
   --help, -h       Show this help
 
 Examples:
-  ai-shell "list files sorted by size"
+  ai "list files sorted by size"
+  ai --setup
+  ai --update
   ai-shell --followup "that didn't work, try a different approach"
-  ai-shell --followup --exit-code=1 "fix that"
 
-Providers (auto-detected from whichever env var is set):
-  anthropic   ANTHROPIC_API_KEY   default model: claude-sonnet-4-6
-  openai      OPENAI_API_KEY      default model: gpt-5.4-mini
-  gemini      GEMINI_API_KEY      default model: gemini-3-flash-preview
-
-Overrides:
-  AI_SHELL_PROVIDER   Force a specific provider (anthropic | openai | gemini)
-  AI_SHELL_MODEL      Override the model name
-
-Config file: ~/.config/ai-shell/config.json
-History:     ~/.local/share/ai-shell/history.jsonl
+Config file: ${CONFIG_PATH}
+History:     ${HISTORY_FILE}
+Version:     ${VERSION}
 `);
-    process.exit(args.length === 0 ? 1 : 0);
-  }
+}
 
-  const config = loadConfig();
+async function main() {
+  const args = process.argv.slice(2);
 
-  if (!config.apiKey) {
-    printSetupHelp(config.provider);
+  if (args.length === 0) {
+    printHelp();
     process.exit(1);
   }
 
-  // Parse flags
   let followup = false;
+  let setupOnly = false;
+  let updateOnly = false;
+  let showVersion = false;
   let lastExitCode = null;
   const queryParts = [];
 
   for (const arg of args) {
     if (arg === '--followup') {
       followup = true;
+    } else if (arg === '--setup') {
+      setupOnly = true;
+    } else if (arg === '--update') {
+      updateOnly = true;
+    } else if (arg === '--version') {
+      showVersion = true;
+    } else if (arg === '--help' || arg === '-h') {
+      printHelp();
+      process.exit(0);
     } else if (arg.startsWith('--exit-code=')) {
       lastExitCode = arg.split('=')[1];
     } else {
       queryParts.push(arg);
     }
+  }
+
+  if (showVersion) {
+    process.stderr.write(`${APP_NAME} ${VERSION}\n`);
+    process.exit(0);
+  }
+
+  if (updateOnly) {
+    runUpdate();
+  }
+
+  let config = loadConfig();
+
+  if (setupOnly) {
+    await runSetup(config.fileConfig);
+    process.exit(0);
   }
 
   const query = queryParts.join(' ');
@@ -380,16 +572,25 @@ History:     ~/.local/share/ai-shell/history.jsonl
     process.exit(1);
   }
 
-  // Build message history
+  if (!config.apiKey) {
+    if (isInteractive()) {
+      process.stderr.write('No config found. Starting first-run setup.\n');
+      await runSetup(config.fileConfig);
+      config = loadConfig();
+    } else {
+      printSetupHint(config.provider);
+      process.exit(1);
+    }
+  }
+
   let messages;
   if (followup) {
-    const thread = getLastThread();
-    messages = buildMessages(query, thread, lastExitCode);
+    messages = buildMessages(query, getLastThread(), lastExitCode);
   } else {
     messages = [{ role: 'user', content: query }];
   }
 
-  process.stderr.write('\x1b[2m'); // dim
+  process.stderr.write('\x1b[2m');
 
   let fullText;
   try {
@@ -399,13 +600,11 @@ History:     ~/.local/share/ai-shell/history.jsonl
     process.exit(1);
   }
 
-  process.stderr.write('\x1b[0m'); // reset
+  process.stderr.write('\x1b[0m');
 
   const result = parseResponse(fullText);
-
   if (result.type === 'clarify') {
     process.stderr.write(`\x1b[33m? ${result.message}\x1b[0m\n`);
-    // Save clarify to history so follow-up has context
     appendHistory({
       timestamp: Date.now(),
       newThread: !followup,
@@ -417,10 +616,7 @@ History:     ~/.local/share/ai-shell/history.jsonl
     process.exit(2);
   }
 
-  // Only show the clean summary (the streaming already showed the raw text)
   process.stderr.write(`\x1b[32m→ ${result.command}\x1b[0m\n`);
-
-  // Save to history
   appendHistory({
     timestamp: Date.now(),
     newThread: !followup,
@@ -429,7 +625,8 @@ History:     ~/.local/share/ai-shell/history.jsonl
     explanation: result.explanation,
   });
 
-  // stdout: only the command (captured by shell wrapper)
+  await maybeNotifyUpdate();
+
   process.stdout.write(result.command);
 }
 
