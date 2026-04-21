@@ -1,8 +1,26 @@
+<img width="1080" height="330" alt="AIShell_cropped" src="https://github.com/user-attachments/assets/db4bbd76-0d74-42f2-adca-798fdd53be01" />
+
 # ai-shell
 
 A tiny zsh plugin that turns natural language into shell commands. Describe what
 you want, press enter, and the command lands on your prompt — ready to review
 before you run it.
+
+Unlike other "AI in your shell" tools, this plugin puts the command to run right in your prompt, letting you edit and submit it, and _leaving it in your history_ so you can re-run it with up-arrow if you need to.
+
+The best way to run it is using the zsh "widget" - press `option+a` then type or paste whatever you want, without worrying about escaping quotes or anything:
+
+```
+$ <type option+a>
+ai> use ffmpeg to crop demo.mov keeping the top 30% vertically
+
+COMMAND: ffmpeg -i AIShell. mov -vf "crop=iw:ih*0.3:0:0" -c:a copy demo_cropped.mov
+EXPLANATION: Crops the video to keep only the top 30% vertically - full width ("iw"), 30% of height ('ih*0.3'), starting f rom the top-left corner ('0:0"). Audio is copied as-is.
+
+$ ffmpeg -i AIShell. mov -vf "crop=iw:ih*0.3:0:0" -c:a copy demo_cropped.mov
+```
+
+You can also invoke it using the `ai` command and put your prompt as the command-line argument:
 
 ```
 $ ai list the 5 largest files in this directory
