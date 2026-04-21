@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -17,6 +17,26 @@ function ensureDataDir() {
   }
 }
 
+// --- Providers ---
+
+const PROVIDERS = {
+  anthropic: {
+    defaultModel: 'claude-sonnet-4-6',
+    envKey: 'ANTHROPIC_API_KEY',
+    call: callAnthropic,
+  },
+  openai: {
+    defaultModel: 'gpt-5.4-mini',
+    envKey: 'OPENAI_API_KEY',
+    call: callOpenAI,
+  },
+  gemini: {
+    defaultModel: 'gemini-3-flash-preview',
+    envKey: 'GEMINI_API_KEY',
+    call: callGemini,
+  },
+};
+
 // --- Config ---
 
 function loadConfig() {
@@ -24,14 +44,47 @@ function loadConfig() {
   if (existsSync(CONFIG_PATH)) {
     try {
       fileConfig = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
-    } catch {}
+    } catch (err) {
+      process.stderr.write(`\x1b[33mWarning: failed to parse ${CONFIG_PATH}: ${err.message}\x1b[0m\n`);
+    }
   }
+
+  // Determine provider: explicit setting wins, else auto-detect from env vars
+  let provider = fileConfig.provider || process.env.AI_SHELL_PROVIDER;
+  if (!provider) {
+    for (const [name, spec] of Object.entries(PROVIDERS)) {
+      if (process.env[spec.envKey]) { provider = name; break; }
+    }
+    provider = provider || 'anthropic';
+  }
+
+  const spec = PROVIDERS[provider];
+  if (!spec) {
+    process.stderr.write(`\x1b[31mError: unknown provider "${provider}". Supported: ${Object.keys(PROVIDERS).join(', ')}\x1b[0m\n`);
+    process.exit(1);
+  }
+
   return {
-    provider: fileConfig.provider || process.env.AI_SHELL_PROVIDER || 'anthropic',
-    model: fileConfig.model || process.env.AI_SHELL_MODEL || 'claude-sonnet-4-6',
-    apiKey: fileConfig.apiKey || process.env.ANTHROPIC_API_KEY,
+    provider,
+    spec,
+    model: fileConfig.model || process.env.AI_SHELL_MODEL || spec.defaultModel,
+    apiKey: fileConfig.apiKey || process.env[spec.envKey],
     systemPrompt: fileConfig.systemPrompt || null,
   };
+}
+
+function printSetupHelp(provider) {
+  process.stderr.write(`\x1b[31mNo API key found for provider "${provider}".\x1b[0m\n\n`);
+  process.stderr.write('Set one of these environment variables to get started:\n\n');
+  process.stderr.write('  Anthropic:  export ANTHROPIC_API_KEY=sk-ant-...     (https://console.anthropic.com/)\n');
+  process.stderr.write('  OpenAI:     export OPENAI_API_KEY=sk-...            (https://platform.openai.com/api-keys)\n');
+  process.stderr.write('  Gemini:     export GEMINI_API_KEY=...               (https://aistudio.google.com/apikey)\n\n');
+  process.stderr.write(`Or create ${CONFIG_PATH}:\n\n`);
+  process.stderr.write('  {\n');
+  process.stderr.write('    "provider": "anthropic",\n');
+  process.stderr.write('    "apiKey": "sk-ant-...",\n');
+  process.stderr.write('    "model": "claude-sonnet-4-6"\n');
+  process.stderr.write('  }\n');
 }
 
 // --- History ---
@@ -125,33 +178,16 @@ function buildMessages(query, thread, lastExitCode) {
   return messages;
 }
 
-// --- Anthropic API (streaming) ---
+// --- SSE streaming ---
+// Reads an SSE response, calls extractDelta(event) on each parsed JSON event,
+// writes any returned text chunk to stderr, and returns the concatenated text.
 
-async function callAnthropic(messages, config) {
-  const systemPrompt = buildSystemPrompt(config);
-
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 1024,
-      system: systemPrompt,
-      stream: true,
-      messages,
-    }),
-  });
-
+async function streamSSE(resp, extractDelta) {
   if (!resp.ok) {
     const body = await resp.text();
     throw new Error(`API error ${resp.status}: ${body}`);
   }
 
-  // Parse SSE stream
   let fullText = '';
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
@@ -172,8 +208,8 @@ async function callAnthropic(messages, config) {
 
       try {
         const event = JSON.parse(data);
-        if (event.type === 'content_block_delta' && event.delta?.text) {
-          const text = event.delta.text;
+        const text = extractDelta(event);
+        if (text) {
           fullText += text;
           process.stderr.write(text);
         }
@@ -183,6 +219,80 @@ async function callAnthropic(messages, config) {
 
   process.stderr.write('\n\n');
   return fullText;
+}
+
+// --- Anthropic ---
+
+async function callAnthropic(messages, config) {
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': config.apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: 1024,
+      system: buildSystemPrompt(config),
+      stream: true,
+      messages,
+    }),
+  });
+
+  return streamSSE(resp, event =>
+    event.type === 'content_block_delta' ? event.delta?.text : null
+  );
+}
+
+// --- OpenAI ---
+
+async function callOpenAI(messages, config) {
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: 1024,
+      stream: true,
+      messages: [
+        { role: 'system', content: buildSystemPrompt(config) },
+        ...messages,
+      ],
+    }),
+  });
+
+  return streamSSE(resp, event =>
+    event.choices?.[0]?.delta?.content
+  );
+}
+
+// --- Gemini ---
+
+async function callGemini(messages, config) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(config.apiKey)}`;
+
+  const contents = messages.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.content }],
+  }));
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: buildSystemPrompt(config) }] },
+      contents,
+      generationConfig: { maxOutputTokens: 1024 },
+    }),
+  });
+
+  return streamSSE(resp, event =>
+    event.candidates?.[0]?.content?.parts?.[0]?.text
+  );
 }
 
 // --- Response parsing ---
@@ -227,13 +337,17 @@ Examples:
   ai-shell --followup "that didn't work, try a different approach"
   ai-shell --followup --exit-code=1 "fix that"
 
-Environment:
-  ANTHROPIC_API_KEY   Your Anthropic API key (required)
-  AI_SHELL_MODEL      Model to use (default: claude-sonnet-4-6)
-  AI_SHELL_PROVIDER   API provider (default: anthropic)
+Providers (auto-detected from whichever env var is set):
+  anthropic   ANTHROPIC_API_KEY   default model: claude-sonnet-4-6
+  openai      OPENAI_API_KEY      default model: gpt-5.4-mini
+  gemini      GEMINI_API_KEY      default model: gemini-3-flash-preview
+
+Overrides:
+  AI_SHELL_PROVIDER   Force a specific provider (anthropic | openai | gemini)
+  AI_SHELL_MODEL      Override the model name
 
 Config file: ~/.config/ai-shell/config.json
-History:    ~/.local/share/ai-shell/history.jsonl
+History:     ~/.local/share/ai-shell/history.jsonl
 `);
     process.exit(args.length === 0 ? 1 : 0);
   }
@@ -241,8 +355,7 @@ History:    ~/.local/share/ai-shell/history.jsonl
   const config = loadConfig();
 
   if (!config.apiKey) {
-    process.stderr.write('Error: No API key found.\n');
-    process.stderr.write('Set ANTHROPIC_API_KEY or add apiKey to ~/.config/ai-shell/config.json\n');
+    printSetupHelp(config.provider);
     process.exit(1);
   }
 
@@ -280,7 +393,7 @@ History:    ~/.local/share/ai-shell/history.jsonl
 
   let fullText;
   try {
-    fullText = await callAnthropic(messages, config);
+    fullText = await config.spec.call(messages, config);
   } catch (err) {
     process.stderr.write(`\x1b[0m\x1b[31mError: ${err.message}\x1b[0m\n`);
     process.exit(1);

@@ -1,6 +1,6 @@
 # ai-shell: AI-powered shell command generator
 # Source this file in your ~/.zshrc:
-#   source /Users/nick/Code/ai-shell/ai-shell.plugin.zsh
+#   source /path/to/ai-shell/ai-shell.plugin.zsh
 
 AI_SHELL_BIN="${0:A:h}/ai-shell.mjs"
 
