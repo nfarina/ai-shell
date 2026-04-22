@@ -58,96 +58,90 @@ function ai!() {
 
 # --- ZLE Widgets ---
 
-# Read multi-line input from /dev/tty.
-# Disables bracketed paste so pasted text arrives clean.
-# Input ends on: empty line (double-enter), Ctrl+D, or single line with no paste.
-function __ai_shell_read_query() {
-  local prompt_str="$1"
-  local lines=()
-  local line
+# Insert a literal newline into the buffer. Bound to Shift+Enter and
+# Option+Enter inside the ai> prompt so users can type multi-line queries.
+function _ai_shell_insert_newline() { LBUFFER+=$'\n' }
+zle -N _ai_shell_insert_newline
 
-  # Disable bracketed paste mode during input
-  printf '\e[?2004l' > /dev/tty
+# Show an "ai> " prompt using zle's line editor, read a query, then run the
+# binary with the query plus any extra args, and load the generated command
+# onto a fresh shell prompt below the streamed output.
+#
+# Display dance, because zle owns whatever it drew:
+#   The ai> prompt uses PREDISPLAY="\nai> " so the display is 2 rows tall.
+#   When we later redraw a 1-row prompt (PS1 + generated command), zle diffs
+#   the heights and clears the trailing row of the old display — which
+#   happens to be the user's "ai> query" line. The external binary output
+#   on rows below isn't in zle's display, so it's safe.
+#   Fix: before running the binary we (a) shrink zle's display to 1 row so
+#   it lets go of the ai> row, then (b) re-emit "ai> query" as plain tty
+#   text — real scrollback, immune to any later zle redraw.
+function __ai_shell_prompt() {
+  local prompt_str="$1"; shift
+  local saved_buffer="$BUFFER"
+  local saved_cursor="$CURSOR"
+  local saved_predisplay="$PREDISPLAY"
 
-  # Read the first line
-  echo -n "$prompt_str" > /dev/tty
-  IFS= read -r line < /dev/tty || { printf '\e[?2004h' > /dev/tty; REPLY=""; return; }
-  line="${line//\$'\e[200~'/}"
-  line="${line//\$'\e[201~'/}"
-  [[ -n "$line" ]] && lines+=("$line")
+  # Clone the user's current keymap and layer on multi-line Enter bindings
+  # scoped to just the ai> prompt.
+  bindkey -N ai-shell-prompt main
+  bindkey -M ai-shell-prompt '^[^M'     _ai_shell_insert_newline   # Opt/Alt+Enter
+  bindkey -M ai-shell-prompt '^[[13;2u' _ai_shell_insert_newline   # Shift+Enter (CSI-u)
+  bindkey -M ai-shell-prompt '^[[13;3u' _ai_shell_insert_newline   # Opt/Alt+Enter (CSI-u)
 
-  # Try reading more lines with a short timeout.
-  # If nothing arrives within 0.1s, this was typed (not pasted) — submit immediately.
-  # If paste data arrives, keep reading until empty line or timeout.
-  while IFS= read -r -t 0.1 line < /dev/tty; do
-    line="${line//\$'\e[200~'/}"
-    line="${line//\$'\e[201~'/}"
-    [[ -z "$line" ]] && break
-    lines+=("$line")
-  done
+  BUFFER=""
+  CURSOR=0
+  PREDISPLAY="$prompt_str"
+  zle -R
+  zle recursive-edit -K ai-shell-prompt
+  local ret=$?
+  local query="$BUFFER"
 
-  # Re-enable bracketed paste mode
-  printf '\e[?2004h' > /dev/tty
+  if [[ $ret -ne 0 || -z "$query" ]]; then
+    BUFFER="$saved_buffer"
+    CURSOR="$saved_cursor"
+    PREDISPLAY="$saved_predisplay"
+    zle reset-prompt
+    return
+  fi
 
-  REPLY="${(j:\n:)lines}"
+  # (a) Shrink zle's display to 1 row (just PS1). This causes zle to clear
+  # its 2nd row — fine, we're about to rewrite it.
+  BUFFER=""
+  CURSOR=0
+  PREDISPLAY="$saved_predisplay"
+  zle -R
+
+  # (b) Re-emit "ai> query" as plain tty text so it persists as scrollback.
+  # Print adds one trailing newline; combined with the \n that zle emits as
+  # part of its redisplay-shrink above, that gives one blank line between
+  # "ai> query" and the streamed response.
+  print -r -- "${prompt_str}${query}" >/dev/tty
+
+  # Invalidate tracking so the final reset-prompt draws fresh at the
+  # current cursor (below the binary output) rather than at the old row.
+  zle -I
+
+  local cmd
+  cmd=$("$AI_SHELL_BIN" "$@" "$query" 2>/dev/tty)
+
+  if [[ -n "$cmd" ]]; then
+    BUFFER="$cmd"
+  else
+    BUFFER="$saved_buffer"
+  fi
+  CURSOR=${#BUFFER}
+  zle reset-prompt
 }
 
 # Option+A: new thread
 function _ai_shell_widget() {
-  zle -I
-  __ai_shell_read_query "ai> "
-  local query="$REPLY"
-
-  if [[ -z "$query" ]]; then
-    zle redisplay
-    return
-  fi
-
-  local saved="$BUFFER"
-  BUFFER="# thinking..."
-  zle redisplay
-
-  local cmd
-  cmd=$("$AI_SHELL_BIN" "$query" 2>/dev/tty)
-
-  if [[ -n "$cmd" ]]; then
-    BUFFER="$cmd"
-    CURSOR=${#BUFFER}
-  else
-    BUFFER="$saved"
-    CURSOR=${#BUFFER}
-  fi
-
-  zle redisplay
+  __ai_shell_prompt $'\nai> '
 }
 
 # Option+Shift+A: follow up on last thread
 function _ai_shell_followup_widget() {
-  zle -I
-  __ai_shell_read_query "ai!> "
-  local query="$REPLY"
-
-  if [[ -z "$query" ]]; then
-    zle redisplay
-    return
-  fi
-
-  local saved="$BUFFER"
-  BUFFER="# thinking..."
-  zle redisplay
-
-  local cmd
-  cmd=$("$AI_SHELL_BIN" --followup --exit-code=$__ai_shell_last_exit "$query" 2>/dev/tty)
-
-  if [[ -n "$cmd" ]]; then
-    BUFFER="$cmd"
-    CURSOR=${#BUFFER}
-  else
-    BUFFER="$saved"
-    CURSOR=${#BUFFER}
-  fi
-
-  zle redisplay
+  __ai_shell_prompt $'\nai!> ' --followup --exit-code=$__ai_shell_last_exit
 }
 
 zle -N _ai_shell_widget

@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 
 const APP_NAME = 'ai-shell';
 const REPO_OWNER = 'nfarina';
+const REPO_NAME = 'ai-shell';
 const DEFAULT_BRANCH = 'main';
 const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${DEFAULT_BRANCH}/install.sh`;
 const VERSION_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${DEFAULT_BRANCH}/VERSION`;
@@ -604,7 +605,7 @@ async function main() {
 
   const result = parseResponse(fullText);
   if (result.type === 'clarify') {
-    process.stderr.write(`\x1b[33m? ${result.message}\x1b[0m\n`);
+    // The streamed output already showed the clarify message; don't re-print it.
     appendHistory({
       timestamp: Date.now(),
       newThread: !followup,

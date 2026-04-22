@@ -64,6 +64,9 @@ That creates `~/.config/ai-shell/config.json` for you.
 If you try `ai ...` before configuring it, ai-shell will launch the same setup
 flow automatically.
 
+Inside the `Option+A` / `Option+Shift+A` prompts you can press **Shift+Enter**
+or **Option+Enter** to add a newline for multi-line queries; plain Enter submits.
+
 ### Examples
 
 ```sh
