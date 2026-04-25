@@ -113,10 +113,9 @@ function __ai_shell_prompt() {
   zle -R
 
   # (b) Re-emit "ai> query" as plain tty text so it persists as scrollback.
-  # Print adds one trailing newline; combined with the \n that zle emits as
-  # part of its redisplay-shrink above, that gives one blank line between
-  # "ai> query" and the streamed response.
-  print -r -- "${prompt_str}${query}" >/dev/tty
+  # No trailing \n: the binary emits its own leading blank line, and we want
+  # exactly one blank line between "ai> query" and the streamed response.
+  print -nr -- "${prompt_str}${query}" >/dev/tty
 
   # Invalidate tracking so the final reset-prompt draws fresh at the
   # current cursor (below the binary output) rather than at the old row.
@@ -124,6 +123,9 @@ function __ai_shell_prompt() {
 
   local cmd
   cmd=$("$AI_SHELL_BIN" "$@" "$query" 2>/dev/tty)
+
+  # Blank line between the streamed response and the new shell prompt below.
+  print "" >/dev/tty
 
   if [[ -n "$cmd" ]]; then
     BUFFER="$cmd"

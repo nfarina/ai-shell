@@ -332,7 +332,7 @@ async function callAnthropic(messages, config) {
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 1024,
+      max_tokens: 5000,
       system: buildSystemPrompt(config),
       stream: true,
       messages,
@@ -353,7 +353,7 @@ async function callOpenAI(messages, config) {
     },
     body: JSON.stringify({
       model: config.model,
-      max_completion_tokens: 1024,
+      max_completion_tokens: 5000,
       stream: true,
       messages: [
         { role: 'system', content: buildSystemPrompt(config) },
@@ -378,7 +378,7 @@ async function callGemini(messages, config) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: buildSystemPrompt(config) }] },
       contents,
-      generationConfig: { maxOutputTokens: 1024 },
+      generationConfig: { maxOutputTokens: 5000 },
     }),
   });
 
@@ -591,7 +591,7 @@ async function main() {
     messages = [{ role: 'user', content: query }];
   }
 
-  process.stderr.write('\x1b[2m');
+  process.stderr.write('\n\x1b[2m');
 
   let fullText;
   try {
@@ -617,7 +617,8 @@ async function main() {
     process.exit(2);
   }
 
-  process.stderr.write(`\x1b[32m→ ${result.command}\x1b[0m\n`);
+  // The streamed "COMMAND: ..." line already shows what we extracted, and
+  // the command itself lands on the user's prompt — no need to re-print it.
   appendHistory({
     timestamp: Date.now(),
     newThread: !followup,
