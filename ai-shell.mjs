@@ -353,7 +353,7 @@ async function callOpenAI(messages, config) {
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 1024,
+      max_completion_tokens: 1024,
       stream: true,
       messages: [
         { role: 'system', content: buildSystemPrompt(config) },
