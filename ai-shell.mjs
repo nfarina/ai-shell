@@ -259,6 +259,7 @@ Rules:
 - Prefer common CLI tools
 - Do not wrap the command in backticks or code fences
 - If you need clarification, respond with: CLARIFY: <your question>
+- If the user simply asks a question you can answer without requiring a command, respond with: ANSWER: <your answer>
 - For multi-line commands (loops, etc.), join them on one line where possible`;
 }
 
@@ -389,9 +390,14 @@ function parseResponse(text) {
   const commandMatch = text.match(/COMMAND:\s*(.+?)(?:\n|$)/s);
   const explanationMatch = text.match(/EXPLANATION:\s*(.+?)(?:\n|$)/s);
   const clarifyMatch = text.match(/CLARIFY:\s*(.+?)(?:\n|$)/s);
+  const answerMatch = text.match(/ANSWER:\s*(.+?)(?:\n|$)/s);
 
   if (clarifyMatch) {
     return { type: 'clarify', message: clarifyMatch[1].trim() };
+  }
+
+  if (answerMatch) {
+    return { type: 'answer', message: answerMatch[1].trim() };
   }
 
   if (commandMatch) {
@@ -615,6 +621,19 @@ async function main() {
       clarify: result.message,
     });
     process.exit(2);
+  }
+
+  if (result.type === 'answer') {
+    // The streamed output already showed the answer; don't re-print it.
+    appendHistory({
+      timestamp: Date.now(),
+      newThread: !followup,
+      query,
+      command: null,
+      explanation: null,
+      answer: result.message,
+    });
+    process.exit(0);
   }
 
   // The streamed "COMMAND: ..." line already shows what we extracted, and

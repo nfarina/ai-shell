@@ -30,6 +30,8 @@ $ ai list the 5 largest files in this directory
 - **Streams** the model's thinking while it works.
 - **Stays on your prompt** — you always get the chance to read and edit the
   command before hitting enter.
+- **Answers questions** too — ask "what does `xargs -I` do?" and you get an
+  answer instead of a command.
 - **Follow-ups** with context: if a command fails, ask `ai!` to fix it and the
   previous exit code and conversation history come along.
 - **Multi-provider**: Anthropic, OpenAI, or Google Gemini.
@@ -83,6 +85,16 @@ $ ai! that errored — try with sudo
 
 If the model isn't sure what you mean, it'll ask a clarifying question instead
 of guessing.
+
+You can also just ask questions. If your query doesn't need a command to answer,
+the model will reply directly and leave your prompt empty:
+
+```sh
+$ ai what's the difference between rsync -a and rsync -r?
+
+ANSWER: -a (archive) implies -r plus preserving symlinks, permissions, timestamps,
+group, owner, and device files. -r is just recursive copy. Use -a for backups.
+```
 
 ## Providers
 
