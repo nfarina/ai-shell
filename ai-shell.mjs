@@ -29,19 +29,19 @@ const UPDATE_CACHE_FILE = join(DATA_DIR, 'update-check.json');
 
 const PROVIDERS = {
   anthropic: {
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: 'claude-sonnet-5-5',
     envKey: 'ANTHROPIC_API_KEY',
     apiKeyUrl: 'https://console.anthropic.com/',
     call: callAnthropic,
   },
   openai: {
-    defaultModel: 'gpt-5.4-mini',
+    defaultModel: 'gpt-6-luna',
     envKey: 'OPENAI_API_KEY',
     apiKeyUrl: 'https://platform.openai.com/api-keys',
     call: callOpenAI,
   },
   gemini: {
-    defaultModel: 'gemini-3-flash-preview',
+    defaultModel: 'gemini-3.8-flash',
     envKey: 'GEMINI_API_KEY',
     apiKeyUrl: 'https://aistudio.google.com/apikey',
     call: callGemini,

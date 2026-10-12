@@ -103,9 +103,9 @@ they override the config and are useful for temporary changes or CI.
 
 | Provider    | Env override         | Default model              |
 | ----------- | -------------------- | -------------------------- |
-| `anthropic` | `ANTHROPIC_API_KEY`  | `claude-sonnet-4-6`        |
-| `openai`    | `OPENAI_API_KEY`     | `gpt-5.4-mini`             |
-| `gemini`    | `GEMINI_API_KEY`     | `gemini-3-flash-preview`   |
+| `anthropic` | `ANTHROPIC_API_KEY`  | `claude-sonnet-5-5`        |
+| `openai`    | `OPENAI_API_KEY`     | `gpt-6-luna`               |
+| `gemini`    | `GEMINI_API_KEY`     | `gemini-3.8-flash`         |
 
 You can also override:
 
@@ -120,7 +120,7 @@ Lives at `~/.config/ai-shell/config.json`:
 ```json
 {
   "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
+  "model": "claude-sonnet-5-5",
   "apiKey": "sk-ant-...",
   "systemPrompt": null
 }
